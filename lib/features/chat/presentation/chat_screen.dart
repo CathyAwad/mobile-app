@@ -1,24 +1,124 @@
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
-import '../../../providers/chats_provider.dart';
+import 'package:frona_mobile/providers/chats_provider.dart';
+import 'package:frona_mobile/features/chat/domain/message_model.dart';
+import 'package:frona_mobile/features/chat/presentation/widgets/tool_executions_view.dart';
+import 'package:frona_mobile/providers/agents_provider.dart';
+import 'package:collection/collection.dart';
+import 'package:go_router/go_router.dart';
 
 class ChatScreen extends HookConsumerWidget {
   final String chatId;
   final String? title;
+  final String? initialMessage;
 
-  const ChatScreen({super.key, required this.chatId, this.title});
+  const ChatScreen({super.key, required this.chatId, this.title, this.initialMessage});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final textController = useTextEditingController();
+    final scrollController = useScrollController();
+    final isAtBottom = useRef(true);
 
-    final messagesAsync = ref.watch(chatMessagesProvider(chatId));
+    final controller = ref.watch(chatControllerProvider(chatId));
+    final messagesAsync = useValueListenable(controller);
+    final messages = messagesAsync.value ?? [];
+
+    final isNewChat = chatId.startsWith('new:');
+    final creatingChat = useState(false);
+    
+    final hasSentInitial = useRef(false);
+    final isMessagesLoading = messagesAsync.isLoading;
+    
+    useEffect(() {
+      if (initialMessage != null && initialMessage!.isNotEmpty && !hasSentInitial.value && !isNewChat && !isMessagesLoading) {
+        hasSentInitial.value = true;
+        Future.microtask(() {
+          ref.read(sendMessageProvider)(chatId, initialMessage!);
+        });
+      }
+      return null;
+    }, [initialMessage, chatId, isNewChat, isMessagesLoading]);
+
+    final chatAsync = ref.watch(chatProvider(chatId));
+    final agentsAsync = ref.watch(agentsProvider);
+    
+    final displayAgentName = useMemoized(() {
+      final chat = chatAsync.value;
+      if (chat == null || chatId.startsWith('new:')) {
+        if (chatId.startsWith('new:')) {
+           final parts = chatId.split(':');
+           if (parts.length > 1 && parts[1] != 'default') {
+             final agents = agentsAsync.value;
+             final agent = agents?.firstWhereOrNull((a) => a.id == parts[1]);
+             return agent?.name ?? 'Assistant';
+           }
+        }
+        return 'Assistant';
+      }
+      
+      final agents = agentsAsync.value;
+      if (agents == null) return 'Assistant';
+      
+      final agent = agents.firstWhereOrNull((a) => a.id == chat.agentId);
+      return agent?.name ?? 'Assistant';
+    }, [chatId, chatAsync.value, agentsAsync.value]);
+
+    final displayTitle = title ?? chatAsync.value?.title ?? (chatId.startsWith('new:') ? 'New chat' : 'Chat');
+
+    useEffect(() {
+      void listener() {
+        if (!scrollController.hasClients) return;
+        isAtBottom.value = scrollController.position.maxScrollExtent - scrollController.offset < 150;
+      }
+      scrollController.addListener(listener);
+      return () => scrollController.removeListener(listener);
+    }, [scrollController]);
+
+    useEffect(() {
+      if (isAtBottom.value && messages.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (scrollController.hasClients) {
+            scrollController.animateTo(
+              scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 150),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      }
+      return null;
+    }, [messages.length, messages.lastOrNull?.content.length, messages.lastOrNull?.toolExecutions.length]);
+
+    // Initial jump to bottom on load
+    useEffect(() {
+      if (messages.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (scrollController.hasClients) {
+            scrollController.jumpTo(scrollController.position.maxScrollExtent);
+          }
+        });
+      }
+      return null;
+    }, [messages.isEmpty]);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(title ?? 'Chat'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(displayTitle, style: theme.textTheme.titleMedium),
+            Text(
+              displayAgentName, 
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
         actions: [
           ref.watch(chatProvider(chatId)).when(
             data: (chat) => PopupMenuButton<String>(
@@ -90,34 +190,18 @@ class ChatScreen extends HookConsumerWidget {
                 if (messages.isEmpty) {
                   return const Center(child: Text('No messages yet. Say hi!'));
                 }
-                return ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    final msg = messages[index];
-                    final isUser = msg.role == 'user';
-                    return Align(
-                      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: isUser ? theme.colorScheme.primary.withOpacity(0.1) : theme.colorScheme.secondary,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: isUser ? theme.colorScheme.primary.withOpacity(0.3) : theme.colorScheme.surface,
-                          ),
-                        ),
-                        constraints: const BoxConstraints(maxWidth: 600),
-                        child: Text(
-                          msg.content,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurface,
-                          ),
-                        ),
-                      ),
-                    );
-                  },
+                return Align(
+                  alignment: Alignment.topCenter,
+                  child: ListView.builder(
+                    controller: scrollController,
+                    reverse: false,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    itemCount: messages.length,
+                    itemBuilder: (context, index) {
+                      final msg = messages[index];
+                      return MessageBubble(chatId: chatId, message: msg);
+                    },
+                  ),
                 );
               },
               loading: () => const Center(child: CircularProgressIndicator()),
@@ -150,11 +234,40 @@ class ChatScreen extends HookConsumerWidget {
                       ),
                     ),
                   ),
-                  IconButton(
+                  creatingChat.value ? 
+                  const Padding(
+                    padding: EdgeInsets.all(12.0),
+                    child: SizedBox(
+                      width: 24, 
+                      height: 24, 
+                      child: CircularProgressIndicator(strokeWidth: 2)
+                    ),
+                  ) : IconButton(
                     icon: Icon(Icons.send, color: theme.colorScheme.onSurface.withOpacity(0.5)),
-                    onPressed: () {
+                    onPressed: () async {
                       final content = textController.text.trim();
-                      if (content.isNotEmpty) {
+                      if (content.isEmpty) return;
+                      
+                      if (isNewChat) {
+                        if (creatingChat.value) return;
+                        creatingChat.value = true;
+                        try {
+                           final parts = chatId.split(':');
+                           final agentId = (parts.length > 1 && parts[1] != 'default') ? parts[1] : null;
+                           final newChat = await ref.read(createChatProvider)(agentId: agentId);
+                           if (context.mounted) {
+                              context.replace('/chat/${newChat.id}', extra: {
+                                'title': newChat.title ?? agentId,
+                                'initialMessage': content
+                              });
+                           }
+                        } catch (e) {
+                           creatingChat.value = false;
+                           if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to start chat: $e')));
+                           }
+                        }
+                      } else {
                         ref.read(sendMessageProvider)(chatId, content);
                         textController.clear();
                       }
@@ -162,6 +275,101 @@ class ChatScreen extends HookConsumerWidget {
                   ),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class MessageBubble extends ConsumerWidget {
+  final String chatId;
+  final ChatMessage message;
+
+  const MessageBubble({super.key, required this.chatId, required this.message});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final isUser = message.role == 'user';
+    final isExecuting = message.status == 'executing';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            backgroundColor: isUser ? theme.colorScheme.primaryContainer : theme.colorScheme.secondaryContainer,
+            foregroundColor: isUser ? theme.colorScheme.onPrimaryContainer : theme.colorScheme.onSecondaryContainer,
+            radius: 16,
+            child: Text(
+              isUser ? 'Y' : 'A',
+              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (message.content.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: isUser ? theme.colorScheme.primary.withOpacity(0.05) : theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: theme.colorScheme.outline.withOpacity(0.1),
+                      ),
+                    ),
+                    constraints: const BoxConstraints(maxWidth: 600),
+                    child: Text(
+                      message.content,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                        height: 1.5,
+                      ),
+                    ),
+                  )
+                else if (isExecuting && !isUser && message.toolExecutions.isEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8, top: 4),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(theme.colorScheme.onSurfaceVariant),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Thinking...',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (message.toolExecutions.isNotEmpty)
+                  ToolExecutionsView(
+                    tools: message.toolExecutions,
+                    chatId: chatId,
+                  ),
+              ],
             ),
           ),
         ],

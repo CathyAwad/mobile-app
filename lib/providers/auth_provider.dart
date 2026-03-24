@@ -64,8 +64,18 @@ class AuthNotifier extends Notifier<AuthState> {
         print('AuthNotifier: no token, isInitializing set to false');
         state = state.copyWith(isInitializing: false);
       }
+    } on DioException catch (e) {
+      print('AuthNotifier: checkAuthStatus DioException = ${e.message}');
+      if (e.response?.statusCode == 401) {
+        // Session expired, clear token and just stop initializing
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('auth_token');
+        state = state.copyWith(isInitializing: false, user: null, error: null);
+      } else {
+        state = state.copyWith(isInitializing: false, error: e.message);
+      }
     } catch (e) {
-      print('AuthNotifier: checkAuthStatus error = $e');
+      print('AuthNotifier: checkAuthStatus unknown error = $e');
       state = state.copyWith(isInitializing: false, error: e.toString());
     }
   }

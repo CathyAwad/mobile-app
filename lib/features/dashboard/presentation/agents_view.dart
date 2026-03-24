@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../../providers/agents_provider.dart';
 
 class AgentsView extends HookConsumerWidget {
@@ -35,7 +36,7 @@ class AgentsView extends HookConsumerWidget {
                 ),
               ),
               onTap: () {
-                // Future: Navigate to agent detail
+                context.push('/chat/new:${agent.id}', extra: agent.name);
               },
             );
           },

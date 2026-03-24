@@ -47,16 +47,7 @@ class ChatsView extends HookConsumerWidget {
           if (tabController.index == 0) {
             _showCreateSpaceDialog(context, ref);
           } else if (tabController.index == 1) {
-            try {
-              final newChat = await ref.read(createChatProvider)();
-              if (context.mounted) {
-                context.push('/chat/${newChat.id}', extra: newChat.title);
-              }
-            } catch (e) {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error creating chat: $e')));
-              }
-            }
+            context.push('/chat/new:default');
           }
         },
         child: const Icon(Icons.add),
